@@ -2,55 +2,72 @@ import logging
 import os
 
 import azure.functions as func
-from azure.functions import TimerRequest
 from azure.storage.blob import BlobServiceClient
 
-# Create the FunctionApp object (new Python model)
 app = func.FunctionApp()
 
-# Timer trigger – runs at 03:00 every day (change schedule if you like)
+
+@app.function_name(name="CopyProdToDev")
 @app.schedule(
-    schedule="0 0 3 * * *",   # CRON: sec min hour day month day-of-week
+    schedule="0 0 3 * * *",
     arg_name="mytimer",
     run_on_startup=False,
     use_monitor=True,
 )
-def copy_prod_to_dev(mytimer: TimerRequest) -> None:
+def copy_prod_to_dev(mytimer: func.TimerRequest) -> None:
     logging.info("CopyProdToDev timer function started")
-
-    conn_str = os.environ["AZURE_STORAGE_CONNECTION_STRING"]
-    src_container_name = os.environ["PROD_CONTAINER"]
-    dst_container_name = os.environ["DEV_CONTAINER"]
-
-    service = BlobServiceClient.from_connection_string(conn_str)
-    src_container = service.get_container_client(src_container_name)
-    dst_container = service.get_container_client(dst_container_name)
-
-    # Make sure destination container exists
     try:
-        dst_container.create_container()
-        logging.info("Destination container created")
-    except Exception:
-        # already exists
-        pass
+        # Step 1: read env vars
+        logging.info("Step 1: reading environment variables")
+        conn_str = os.environ["AZURE_STORAGE_CONNECTION_STRING"]
+        src_container_name = os.environ["PROD_CONTAINER"]
+        dst_container_name = os.environ["DEV_CONTAINER"]
+        logging.info(
+            "Using src_container=%s, dst_container=%s",
+            src_container_name,
+            dst_container_name,
+        )
 
-    copied = 0
-    skipped = 0
+        # Step 2: create clients
+        logging.info("Step 2: creating BlobServiceClient")
+        service = BlobServiceClient.from_connection_string(conn_str)
+        src_container = service.get_container_client(src_container_name)
+        dst_container = service.get_container_client(dst_container_name)
 
-    for blob in src_container.list_blobs():
-        src_blob = src_container.get_blob_client(blob.name)
-        dst_blob = dst_container.get_blob_client(blob.name)
-
-        # Skip if already exists in dev
+        # Step 3: ensure destination container
+        logging.info("Step 3: ensuring destination container exists")
         try:
-            dst_blob.get_blob_properties()
-            skipped += 1
-            continue
+            dst_container.create_container()
+            logging.info("Destination container created")
         except Exception:
-            pass
+            logging.info("Destination container already exists")
 
-        logging.info(f"Copying blob: {blob.name}")
-        dst_blob.start_copy_from_url(src_blob.url)
-        copied += 1
+        # Step 4: copy blobs
+        logging.info("Step 4: starting copy loop")
+        copied = 0
+        skipped = 0
 
-    logging.info(f"CopyProdToDev completed. Copied: {copied}, skipped: {skipped}")
+        for blob in src_container.list_blobs():
+            src_blob = src_container.get_blob_client(blob.name)
+            dst_blob = dst_container.get_blob_client(blob.name)
+
+            # skip if already exists
+            try:
+                dst_blob.get_blob_properties()
+                skipped += 1
+                continue
+            except Exception:
+                pass
+
+            logging.info("Copying blob: %s", blob.name)
+            dst_blob.start_copy_from_url(src_blob.url)
+            copied += 1
+
+        logging.info(
+            "CopyProdToDev completed. Copied: %d, skipped: %d", copied, skipped
+        )
+
+    except Exception:
+        # THIS will print the real error into Log Stream
+        logging.exception("CopyProdToDev failed with an unexpected error")
+        raise
