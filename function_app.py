@@ -45,26 +45,39 @@ def copy_prod_to_dev(mytimer: func.TimerRequest) -> None:
         # Step 4: copy blobs
         logging.info("Step 4: starting copy loop")
         copied = 0
+        updated = 0
         skipped = 0
 
         for blob in src_container.list_blobs():
             src_blob = src_container.get_blob_client(blob.name)
             dst_blob = dst_container.get_blob_client(blob.name)
 
-            # skip if already exists
             try:
-                dst_blob.get_blob_properties()
-                skipped += 1
-                continue
-            except Exception:
-                pass
+                src_props = src_blob.get_blob_properties()
+                dst_props = dst_blob.get_blob_properties()
 
-            logging.info("Copying blob: %s", blob.name)
-            dst_blob.start_copy_from_url(src_blob.url)
-            copied += 1
+                if dst_props.etag == src_props.etag:
+                    skipped += 1
+                    continue
+
+                logging.info("Updating blob (content differs): %s", blob.name)
+                try:
+                    dst_blob.delete_blob()
+                except Exception:
+                    logging.info("Destination blob existed but could not delete before copy; retrying copy anyway")
+
+                dst_blob.start_copy_from_url(src_blob.url)
+                updated += 1
+            except Exception:
+                logging.info("Copying new blob: %s", blob.name)
+                dst_blob.start_copy_from_url(src_blob.url)
+                copied += 1
 
         logging.info(
-            "CopyProdToDev completed. Copied: %d, skipped: %d", copied, skipped
+            "CopyProdToDev completed. Copied: %d, updated: %d, skipped: %d",
+            copied,
+            updated,
+            skipped,
         )
 
     except Exception:
